@@ -248,3 +248,21 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+async def pin_shop_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /pin — публикует сообщение с кнопкой магазина в группе (только для админа)."""
+    if update.effective_user.username != ADMIN_USERNAME:
+        return
+
+    from config import SHOP_URL, GROUP_ID
+    msg = await context.bot.send_message(
+        chat_id=GROUP_ID,
+        text="🛍 *Fallen Claude — Магазин*\n\nЖидкости, расходники, под-системы, снюс\n\nНажми кнопку ниже чтобы открыть каталог 👇",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🛒 Открыть магазин", url=SHOP_URL)
+        ]])
+    )
+    await context.bot.pin_chat_message(chat_id=GROUP_ID, message_id=msg.message_id)
+    await update.message.reply_text("✅ Сообщение опубликовано и закреплено в группе")
