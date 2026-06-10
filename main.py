@@ -6,6 +6,7 @@ from datetime import date
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import sheets
+import stock as stock_svc
 from config import BOT_TOKEN, ADMIN_CHAT_ID, ADMIN_USERNAME, POLL_INTERVAL, SHOP_URL, GROUP_ID
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -78,21 +79,39 @@ async def pin_shop_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     if update.effective_user.username != ADMIN_USERNAME:
+        await query.answer()
         return
     action, order_id = query.data.split(":", 1)
     new_status = {"confirm": "confirmed", "done": "done", "cancel": "cancelled"}.get(action)
     if not new_status:
+        await query.answer()
         return
     try:
         row_idx = sheets.find_row_idx("orders", 1, order_id)
         if not row_idx:
             await query.answer("Заказ не найден", show_alert=True)
             return
-        sheets.update_cell("orders", row_idx, 7, new_status)
         rows = sheets.get_all("orders")
         order = next((r for r in rows if str(r.get("id", "")) == order_id), None)
+        if not order:
+            await query.answer("Заказ не найден", show_alert=True)
+            return
+
+        old_status = order.get("status", "new")
+        items_json = order.get("items_json", "[]")
+
+        if action == "confirm" and old_status == "new":
+            ok, err = stock_svc.decrease_stock_for_order(items_json)
+            if not ok:
+                await query.answer(err or "Недостаточно товара на складе", show_alert=True)
+                return
+
+        if action == "cancel" and old_status == "confirmed":
+            stock_svc.increase_stock_for_order(items_json)
+
+        sheets.update_cell("orders", row_idx, 7, new_status)
+        await query.answer()
         if order and order.get("tg_user_id"):
             labels = {"confirmed": "✅ Подтверждён — ждём вас!", "done": "🎉 Выдан — спасибо за покупку!", "cancelled": "❌ Отменён"}
             label = labels.get(new_status)
