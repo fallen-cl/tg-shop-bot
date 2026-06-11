@@ -38,9 +38,28 @@ def append_row(sheet_name: str, row: list) -> None:
 
 
 def find_row_idx(sheet_name: str, col: int, value: str) -> int | None:
-    """Returns 1-based row index or None."""
     col_values = get_sheet(sheet_name).col_values(col)
-    try:
-        return col_values.index(value) + 1
-    except ValueError:
+    matches = [idx + 1 for idx, v in enumerate(col_values) if v == value]
+    if len(matches) != 1:
         return None
+    return matches[0]
+
+
+def update_order_status_if(order_id: str, expected_status: str, new_status: str) -> bool:
+    ws = get_sheet("orders")
+    headers = [h.lower().strip() for h in ws.row_values(1)]
+    try:
+        status_col = headers.index("status") + 1
+    except ValueError:
+        return False
+
+    records = ws.get_all_records()
+    for idx, record in enumerate(records, start=2):
+        if str(record.get("id", "")) != order_id:
+            continue
+        current = str(record.get("status", "new"))
+        if current != expected_status:
+            return False
+        ws.update_cell(idx, status_col, new_status)
+        return True
+    return False

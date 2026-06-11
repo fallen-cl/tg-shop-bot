@@ -7,7 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import sheets
 import stock as stock_svc
-from config import BOT_TOKEN, ADMIN_CHAT_ID, ADMIN_USERNAME, POLL_INTERVAL, SHOP_URL, GROUP_ID
+from config import BOT_TOKEN, ADMIN_CHAT_ID, POLL_INTERVAL, SHOP_URL, GROUP_ID, is_admin
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def orders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.username != ADMIN_USERNAME:
+    if not is_admin(update.effective_user):
         await update.message.reply_text("⛔ Нет доступа.")
         return
     try:
@@ -48,20 +48,39 @@ async def orders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = r.get("status", "new")
         emoji = {"new": "🆕", "confirmed": "✅", "done": "🎉", "cancelled": "❌"}.get(status, "❓")
         try:
-            items_text = "\n".join(f"  • {i.get('name','?')} × {i.get('quantity',1)}" for i in json.loads(r.get("items_json", "[]")))
+            items_text = "\n".join(
+                f"  • {i.get('name', '?')} × {i.get('quantity', 1)}"
+                for i in json.loads(r.get("items_json", "[]"))
+            )
         except Exception:
             items_text = "—"
-        text = f"{emoji} `{order_id[-10:]}`\n👤 {r.get('tg_username','?')}\n🕐 {r.get('pickup_time','?')}\n{items_text}\n💰 {float(r.get('total',0)):,.0f} Br"
+        text = (
+            f"{emoji} `{order_id[-10:]}`\n"
+            f"👤 {r.get('tg_username', '?')}\n"
+            f"🕐 {r.get('pickup_time', '?')}\n"
+            f"{items_text}\n"
+            f"💰 {float(r.get('total', 0)):,.0f} Br"
+        )
         keyboard = []
         if status == "new":
-            keyboard = [[InlineKeyboardButton("✅ Подтвердить", callback_data=f"confirm:{order_id}"), InlineKeyboardButton("❌ Отменить", callback_data=f"cancel:{order_id}")]]
+            keyboard = [[
+                InlineKeyboardButton("✅ Подтвердить", callback_data=f"confirm:{order_id}"),
+                InlineKeyboardButton("❌ Отменить", callback_data=f"cancel:{order_id}"),
+            ]]
         elif status == "confirmed":
-            keyboard = [[InlineKeyboardButton("🎉 Выдан", callback_data=f"done:{order_id}"), InlineKeyboardButton("❌ Отменить", callback_data=f"cancel:{order_id}")]]
-        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
+            keyboard = [[
+                InlineKeyboardButton("🎉 Выдан", callback_data=f"done:{order_id}"),
+                InlineKeyboardButton("❌ Отменить", callback_data=f"cancel:{order_id}"),
+            ]]
+        await update.message.reply_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
+        )
 
 
 async def pin_shop_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.username != ADMIN_USERNAME:
+    if not is_admin(update.effective_user):
         await update.message.reply_text("⛔ Нет доступа.")
         return
     try:
@@ -69,7 +88,7 @@ async def pin_shop_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=GROUP_ID,
             text="🛍 *Fallen Claude — Магазин*\n\nЖидкости, расходники, под-системы, снюс\n\nНажми кнопку ниже чтобы открыть каталог 👇",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛒 Открыть магазин", url=SHOP_URL)]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛒 Открыть магазин", url=SHOP_URL)]]),
         )
         await context.bot.pin_chat_message(chat_id=GROUP_ID, message_id=msg.message_id)
         await update.message.reply_text("✅ Сообщение опубликовано и закреплено в группе")
@@ -79,19 +98,17 @@ async def pin_shop_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if update.effective_user.username != ADMIN_USERNAME:
-        await query.answer()
+    if not is_admin(update.effective_user):
+        await query.answer("⛔ Нет доступа", show_alert=True)
         return
+
     action, order_id = query.data.split(":", 1)
     new_status = {"confirm": "confirmed", "done": "done", "cancel": "cancelled"}.get(action)
     if not new_status:
         await query.answer()
         return
+
     try:
-        row_idx = sheets.find_row_idx("orders", 1, order_id)
-        if not row_idx:
-            await query.answer("Заказ не найден", show_alert=True)
-            return
         rows = sheets.get_all("orders")
         order = next((r for r in rows if str(r.get("id", "")) == order_id), None)
         if not order:
@@ -101,27 +118,57 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         old_status = order.get("status", "new")
         items_json = order.get("items_json", "[]")
 
+        # Handle stock changes
         if action == "confirm" and old_status == "new":
             ok, err = stock_svc.decrease_stock_for_order(items_json)
             if not ok:
-                await query.answer(err or "Недостаточно товара на складе", show_alert=True)
+                await query.answer(err or "Не удалось зарезервировать товар", show_alert=True)
+                return
+        elif action == "cancel" and old_status == "confirmed":
+            ok, err = stock_svc.increase_stock_for_order(items_json)
+            if not ok:
+                await query.answer(err or "Не удалось вернуть остатки", show_alert=True)
                 return
 
-        if action == "cancel" and old_status == "confirmed":
-            stock_svc.increase_stock_for_order(items_json)
+        expected = old_status
+        if action == "confirm":
+            expected = "new"
+        elif action == "done":
+            expected = "confirmed"
+        elif action == "cancel":
+            expected = old_status
 
-        sheets.update_cell("orders", row_idx, 7, new_status)
+        if not sheets.update_order_status_if(order_id, expected, new_status):
+            # Rollback stock changes if status update failed
+            if action == "confirm" and old_status == "new":
+                stock_svc.increase_stock_for_order(items_json)
+            elif action == "cancel" and old_status == "confirmed":
+                stock_svc.decrease_stock_for_order(items_json)
+            await query.answer("Статус уже изменён", show_alert=True)
+            return
+
         await query.answer()
-        if order and order.get("tg_user_id"):
-            labels = {"confirmed": "✅ Подтверждён — ждём вас!", "done": "🎉 Выдан — спасибо за покупку!", "cancelled": "❌ Отменён"}
+        if order.get("tg_user_id"):
+            labels = {
+                "confirmed": "✅ Подтверждён — ждём вас!",
+                "done": "🎉 Выдан — спасибо за покупку!",
+                "cancelled": "❌ Отменён",
+            }
             label = labels.get(new_status)
             if label:
                 try:
-                    await context.bot.send_message(chat_id=int(order["tg_user_id"]), text=f"Заказ `{order_id[-10:]}`: {label}", parse_mode="Markdown")
+                    await context.bot.send_message(
+                        chat_id=int(order["tg_user_id"]),
+                        text=f"Заказ `{order_id[-10:]}`: {label}",
+                        parse_mode="Markdown",
+                    )
                 except Exception as e:
                     logger.error(f"Failed to notify customer: {e}")
     except Exception as e:
         logger.error(f"Error updating status: {e}")
+        await query.answer("Ошибка", show_alert=True)
+        return
+
     labels = {"confirmed": "✅ Подтверждён", "done": "🎉 Выдан", "cancelled": "❌ Отменён"}
     await query.edit_message_text(query.message.text + f"\n\n→ {labels[new_status]}", parse_mode="Markdown")
 
@@ -149,22 +196,29 @@ async def poll_new_orders(bot):
                     continue
                 try:
                     items_text = "\n".join(
-                        f"  • {i.get('name','?')} × {i.get('quantity',1)} — {float(i.get('price',0)) * int(i.get('quantity',1)):,.0f} Br"
-                        for i in json.loads(r.get("items_json", "[]")))
+                        f"  • {i.get('name', '?')} × {i.get('quantity', 1)} — "
+                        f"{float(i.get('price', 0)) * int(i.get('quantity', 1)):,.0f} Br"
+                        for i in json.loads(r.get("items_json", "[]"))
+                    )
                 except Exception:
                     items_text = "—"
                 text = (
                     f"🛍 *Новый заказ* `{order_id[-10:]}`\n\n"
-                    f"👤 {r.get('tg_username','?')}\n"
-                    f"🕐 {r.get('pickup_time','?')}\n\n"
+                    f"👤 {r.get('tg_username', '?')}\n"
+                    f"🕐 {r.get('pickup_time', '?')}\n\n"
                     f"*Состав:*\n{items_text}\n\n"
-                    f"💰 *Итого: {float(r.get('total',0)):,.0f} Br*"
+                    f"💰 *Итого: {float(r.get('total', 0)):,.0f} Br*"
                 )
                 keyboard = [[
                     InlineKeyboardButton("✅ Подтвердить", callback_data=f"confirm:{order_id}"),
                     InlineKeyboardButton("❌ Отменить", callback_data=f"cancel:{order_id}"),
                 ]]
-                await bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+                await bot.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text=text,
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                )
                 _notified_orders.add(order_id)
                 logger.info(f"Notified admin about order {order_id}")
         except Exception as e:
@@ -173,9 +227,9 @@ async def poll_new_orders(bot):
 
 async def main():
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start",  start))
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("orders", orders_cmd))
-    app.add_handler(CommandHandler("pin",    pin_shop_button))
+    app.add_handler(CommandHandler("pin", pin_shop_button))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     async with app:

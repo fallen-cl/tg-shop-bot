@@ -74,7 +74,8 @@ def order_items_from_json(items_json: str) -> list[tuple[str, int]]:
             qty = int(item.get("quantity", 1))
         except Exception:
             qty = 1
-        items.append((pid, qty))
+        if qty > 0:
+            items.append((pid, qty))
     return items
 
 
@@ -85,8 +86,8 @@ def decrease_stock_for_order(items_json: str) -> tuple[bool, str]:
     return apply_stock_deltas(deltas)
 
 
-def increase_stock_for_order(items_json: str) -> None:
+def increase_stock_for_order(items_json: str) -> tuple[bool, str]:
     deltas: dict[str, int] = {}
     for product_id, quantity in order_items_from_json(items_json):
         deltas[product_id] = deltas.get(product_id, 0) + quantity
-    apply_stock_deltas(deltas)
+    return apply_stock_deltas(deltas)
