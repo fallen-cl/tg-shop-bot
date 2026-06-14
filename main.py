@@ -19,11 +19,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user:
         return
+    ref_arg = context.args[0] if context.args else None
     try:
         rows = sheets.get_all("users")
-        exists = any(str(r.get("tg_user_id", "")) == str(user.id) for r in rows)
-        if not exists:
-            sheets.append_row("users", [user.id, user.username or "", user.first_name or "", str(date.today())])
+        existing = next((r for r in rows if str(r.get("tg_user_id", "")) == str(user.id)), None)
+        if not existing:
+            referred_by = ""
+            if ref_arg and ref_arg.isdigit():
+                referrer_id = int(ref_arg)
+                if referrer_id != user.id:
+                    referrer_exists = any(
+                        str(r.get("tg_user_id", "")) == str(referrer_id) for r in rows
+                    )
+                    if referrer_exists:
+                        referred_by = str(referrer_id)
+            sheets.append_row("users", [
+                user.id,
+                user.username or "",
+                user.first_name or "",
+                str(date.today()),
+                referred_by,
+                0,
+            ])
     except Exception as e:
         logger.error(f"Error saving user: {e}")
     await update.message.reply_text(
