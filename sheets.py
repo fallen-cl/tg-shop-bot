@@ -63,3 +63,24 @@ def update_order_status_if(order_id: str, expected_status: str, new_status: str)
         ws.update_cell(idx, status_col, new_status)
         return True
     return False
+
+
+def increment_user_field(user_id: int, field: str, delta: int = 1) -> bool:
+    ws = get_sheet("users")
+    headers = [h.lower().strip() for h in ws.row_values(1)]
+    try:
+        id_col = headers.index("tg_user_id")
+        field_col = headers.index(field.lower())
+    except ValueError:
+        return False
+
+    records = ws.get_all_records()
+    for idx, record in enumerate(records, start=2):
+        if str(record.get("tg_user_id", "")) == str(user_id):
+            try:
+                current = int(record.get(field, 0) or 0)
+            except (ValueError, TypeError):
+                current = 0
+            ws.update_cell(idx, field_col + 1, current + delta)
+            return True
+    return False

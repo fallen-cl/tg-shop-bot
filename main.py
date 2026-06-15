@@ -164,6 +164,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Статус уже изменён", show_alert=True)
             return
 
+        # Handle referral credit when order is marked done
+        if action == "done":
+            try:
+                user_rows = sheets.get_all("users")
+                user = next((u for u in user_rows if str(u.get("tg_user_id", "")) == str(order.get("tg_user_id"))), None)
+                if user:
+                    referred_by = str(user.get("referred_by", ""))
+                    if referred_by and referred_by.isdigit():
+                        sheets.increment_user_field(int(referred_by), "referral_credits_earned", 1)
+                        logger.info(f"Gave referral credit to user {referred_by} for order {order_id}")
+            except Exception as e:
+                logger.error(f"Error giving referral credit: {e}")
+
         await query.answer()
         if order.get("tg_user_id"):
             labels = {
